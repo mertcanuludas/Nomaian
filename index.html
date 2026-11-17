@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1220" />
+    <title>Nomaian</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Nomaian</h1>
+      <nav role="tablist">
+        <button role="tab" data-tab="write" aria-selected="true">Yaz</button>
+        <button role="tab" data-tab="read" aria-selected="false">Oku</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="tab-write" class="panel">
+        <p class="hint">Her mesaj kendi spiraline yazılır; cevaplar cevap verdikleri mesajın spiralinden dallanır.</p>
+        <ol id="thread" class="thread"></ol>
+        <div class="meta">
+          <button id="reset" class="small">Yeni konuşma</button>
+          <select id="theme" aria-label="Arka plan"></select>
+          <label class="ink-all">Tüm yazılar <select id="ink" aria-label="Tüm yazıların rengi"></select></label>
+        </div>
+        <canvas id="glyph" aria-label="Nomai spiralleri"></canvas>
+        <p id="write-error" class="error" hidden></p>
+        <div class="actions">
+          <button id="download" class="primary">PNG indir</button>
+          <button id="share" hidden>Paylaş</button>
+        </div>
+      </section>
+
+      <section id="tab-read" class="panel" hidden>
+        <div class="actions">
+          <button id="scan" class="primary">Kamerayla tara</button>
+          <label class="pick">
+            <input id="file" type="file" accept="image/*" />
+            Fotoğraf seç
+          </label>
+        </div>
+        <p id="read-hint" class="hint">Kamerayı yazının üzerinde yavaşça gezdir. Spiralin tamamı kadraja sığmak zorunda değil: yakından, parça parça okuyabilirsin; okunan parçalar birleştirilir. Silindir gibi kavisli yüzeylerde de çalışır.</p>
+        <div id="scanner" class="scanner" hidden>
+          <video id="video" playsinline muted></video>
+          <canvas id="overlay"></canvas>
+          <div class="scan-bar">
+            <span id="scan-progress"></span>
+            <button id="stop" class="small">Durdur</button>
+          </div>
+        </div>
+        <div id="read-status" class="status" hidden></div>
+        <ol id="result" class="thread read" hidden></ol>
+        <div class="actions">
+          <button id="copy" hidden>Kopyala</button>
+        </div>
+        <canvas id="photo" hidden></canvas>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
