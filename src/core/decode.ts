@@ -52,6 +52,8 @@ export interface Partial {
 /** A chain of writing found in a frame: its markers, and the message it is part of if that is known yet. */
 export interface ChainSeen {
   markers: Pt[];
+  /** the line the writing follows through them */
+  path: Pt[];
   /** index of the message, or -1 while not known */
   message: number;
 }
@@ -310,9 +312,14 @@ function readGap(sample: (x: number, y: number) => number, darkInk: boolean, f: 
 export interface ChainRead {
   gaps: Float32Array[];
   markers: Pt[];
+  /** the line the writing follows, from the first marker to the last, as image points (for display) */
+  path: Pt[];
   /** how each gap lined up (for diagnostics) */
   fits: Array<Omit<GapFit, 'curve'>>;
 }
+
+/** Points per gap of a chain's path. */
+const PATH_STEPS = 8;
 
 /** More markers than this means clutter or noise, not writing. */
 const MAX_MARKERS = 400;
@@ -396,17 +403,23 @@ export function readChains(g: Gray, bin: Uint8Array, darkInk: boolean): ChainRea
       fits = fits.map((f, k) => (f && f.phase !== phase ? fitGap(bin, w, h, curves[k], [phase]) : f));
     }
     // Read the gaps in walking order; a gap that does not line up splits the chain.
-    let run: ChainRead = { gaps: [], fits: [], markers: [{ x: markers[order[0]].x, y: markers[order[0]].y }] };
+    const newRun = (m: Marker): ChainRead => ({ gaps: [], fits: [], markers: [{ x: m.x, y: m.y }], path: [{ x: m.x, y: m.y }] });
+    let run = newRun(markers[order[0]]);
     fits.forEach((fit, k) => {
       const B = markers[order[k + 1]];
       if (!fit) {
         if (run.gaps.length) chains.push(run);
-        run = { gaps: [], fits: [], markers: [{ x: B.x, y: B.y }] };
+        run = newRun(B);
         return;
       }
       run.gaps.push(readGap(sample, darkInk, fit));
       run.fits.push({ phase: fit.phase, ds: fit.ds, dv: fit.dv, fit: fit.fit });
       run.markers.push({ x: B.x, y: B.y });
+      // The gap's own curve, not the straight line between its markers, which cuts across tight turns.
+      for (let k = 1; k <= PATH_STEPS; k++) {
+        const [x, y] = fit.curve.at((GAP_LEN * k) / PATH_STEPS, 0);
+        run.path.push({ x, y });
+      }
     });
     if (run.gaps.length) chains.push(run);
   };
@@ -552,20 +565,20 @@ export class Reader {
       (dark: boolean) => binarizeBlocks(g, 12, dark),
       (dark: boolean) => binarize(g, minDim / 8, dark),
     ];
-    const shown: Array<{ markers: Pt[]; contig: Contig | null }> = [];
+    const shown: Array<{ markers: Pt[]; path: Pt[]; contig: Contig | null }> = [];
     const polarity = opts.darkInk ?? this.darkInk;
     for (const pass of opts.passes ?? binarizers.map((_, i) => i)) {
       for (const darkInk of [true, false]) {
         if (polarity !== undefined && polarity !== darkInk) continue;
         const chains = readChains(g, binarizers[pass](darkInk), darkInk);
-        for (const c of chains) shown.push({ markers: c.markers, contig: c.gaps.length >= 2 ? this.remember(c.gaps, now) : null });
+        for (const c of chains) shown.push({ markers: c.markers, path: c.path, contig: c.gaps.length >= 2 ? this.remember(c.gaps, now) : null });
         if (this.decodeRuns(darkInk)) this.darkInk ??= darkInk;
       }
     }
     this.contigs = this.contigs.filter((c) => now - c.seen < MEMORY_MS);
-    const chains = shown.map(({ markers, contig }) => {
+    const chains = shown.map(({ markers, path, contig }) => {
       const key = contig?.key;
-      return { markers, message: key !== undefined ? (this.numbers.get(key) ?? -1) : -1 };
+      return { markers, path, message: key !== undefined ? (this.numbers.get(key) ?? -1) : -1 };
     });
     return { messages: this.messages(), partial: this.partial(), chains, ms: Date.now() - t0 };
   }

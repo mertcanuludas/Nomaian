@@ -2,6 +2,7 @@ import { BINARIZERS, ChainSeen, DecodedMessage, Partial } from './core/decode';
 import { Conversation, encodeWithLayout, layoutKey, LayoutRequest, layoutRequest, MAX_MESSAGES, Message, messageSize } from './core/encode';
 import { DATA_BYTES, Layout, PORTS } from './core/layout';
 import type { LayoutJob, LayoutReply } from './layout-worker';
+import { ScanBeams } from './scan-beams';
 import { imageSize, INKS, renderConversation, WALLS, wallTheme } from './core/render';
 import type { DecodeRequest, DecodeResponse } from './worker';
 
@@ -648,6 +649,14 @@ let pass = 0;
 /** Segments read so far of messages not yet complete. */
 let partial: Partial[] = [];
 const frame = document.createElement('canvas');
+const beams = new ScanBeams();
+
+/** Draws the beams over the camera picture, every screen frame while scanning. */
+function animateBeams(now: number) {
+  if (!scanning) return;
+  beams.draw(overlay.getContext('2d')!, now);
+  requestAnimationFrame(animateBeams);
+}
 
 scanBtn.addEventListener('click', startScan);
 $('stop').addEventListener('click', () => {
@@ -683,11 +692,15 @@ async function startScan() {
   const reset: DecodeRequest = { type: 'reset' };
   worker.postMessage(reset);
   updateProgress();
+  beams.clear();
   requestAnimationFrame(scanFrame);
+  requestAnimationFrame(animateBeams);
 }
 
 function stopScan() {
   scanning = false;
+  beams.clear();
+  overlay.getContext('2d')?.clearRect(0, 0, overlay.width, overlay.height);
   stream?.getTracks().forEach((t) => t.stop());
   stream = null;
   video.srcObject = null;
@@ -725,9 +738,12 @@ function scanFrame() {
   onResult = (r) => {
     busy = false;
     if (!scanning) return;
-    overlay.width = width;
-    overlay.height = height;
-    drawChains(overlay, r.chains, 0.9);
+    // The overlay matches the frame, so the chains' coordinates fit it; resizing clears it, so only on change.
+    if (overlay.width !== width || overlay.height !== height) {
+      overlay.width = width;
+      overlay.height = height;
+    }
+    beams.setChains(r.chains);
     partial = r.partial;
     if (collect(r.messages)) {
       navigator.vibrate?.(40);
@@ -772,7 +788,7 @@ function showConversation() {
   copyBtn.hidden = !msgs.length;
 }
 
-/** Draws the chains of writing found in a frame: the line through their markers, the markers, and message numbers. */
+/** Draws the chains of writing found in a photo: the line through their markers, the markers, and message numbers. */
 function drawChains(canvas: HTMLCanvasElement, chains: ChainSeen[], alpha: number) {
   const ctx = canvas.getContext('2d')!;
   ctx.globalAlpha = alpha;
