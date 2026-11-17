@@ -109,6 +109,53 @@ function removeSubtree(i: number) {
   conv.messages = kept;
 }
 
+/**
+ * Stops a field from taking its message past DATA_BYTES: whatever was just typed or pasted is cut down to
+ * what still fits (none of it, once the message is full). The size is measured, not counted, since the text
+ * is compressed and a character can take more or less than a byte. Text that was already over the limit
+ * (saved before the limit was lowered) can still be shortened. Must be added before the field's own input
+ * handler, so that handler sees the trimmed value.
+ */
+function keepWithinLimit(field: HTMLInputElement | HTMLTextAreaElement, initial: string, sizeOf: (value: string) => number) {
+  let last = initial;
+  const apply = () => {
+    const now = field.value;
+    if (sizeOf(now) <= DATA_BYTES || sizeOf(now) <= sizeOf(last)) {
+      last = now;
+      return;
+    }
+    // What changed: the text between the part both share at the start and the part they share at the end.
+    let head = 0;
+    while (head < last.length && head < now.length && last[head] === now[head]) head++;
+    let tail = 0;
+    while (tail < last.length - head && tail < now.length - head && last[last.length - 1 - tail] === now[now.length - 1 - tail]) tail++;
+    const before = now.slice(0, head);
+    const after = now.slice(now.length - tail);
+    const added = Array.from(now.slice(head, now.length - tail));
+    // The longest start of the added text that still fits.
+    let lo = 0;
+    let hi = added.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (sizeOf(before + added.slice(0, mid).join('') + after) <= DATA_BYTES) lo = mid;
+      else hi = mid - 1;
+    }
+    const kept = added.slice(0, lo).join('');
+    field.value = before + kept + after;
+    const caret = before.length + kept.length;
+    field.setSelectionRange(caret, caret);
+    last = field.value;
+  };
+  field.addEventListener('input', (e) => {
+    // Wait for a composed character (dead keys, IMEs) to be finished.
+    if (!(e as InputEvent).isComposing) apply();
+  });
+  field.addEventListener('compositionend', () => {
+    apply();
+    field.dispatchEvent(new Event('input'));
+  });
+}
+
 function updateCard(li: HTMLElement, i: number) {
   const size = messageSize(conv.messages[i]);
   const count = li.querySelector<HTMLElement>('.count')!;
@@ -135,6 +182,7 @@ function buildEditor() {
     author.maxLength = 24;
     author.value = m.author;
     author.setAttribute('aria-label', 'Yazar');
+    keepWithinLimit(author, m.author, (v) => messageSize({ ...m, author: v }));
     author.addEventListener('input', () => {
       m.author = author.value;
       updateCard(li, i);
@@ -149,6 +197,7 @@ function buildEditor() {
     text.value = m.text;
     text.placeholder = 'Gezgin, bu mesajı yalnızca Nomai okuyabilir…';
     text.setAttribute('aria-label', 'Mesaj');
+    keepWithinLimit(text, m.text, (v) => messageSize({ ...m, text: v }));
     text.addEventListener('input', () => {
       m.text = text.value;
       updateCard(li, i);
