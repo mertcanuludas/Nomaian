@@ -168,13 +168,13 @@ export const GAP_END: [number, number] = [GAP_LEN - 2 * ZIG_A, -BOND / 2];
  * message curls as much as a long one, just smaller.
  */
 const VARIANT_SHAPES = [
-  // From an open sweep that just comes round once to a curl of over two turns; the looser ones start from
-  // a wider eye, as the old shapes did.
-  { turns: 0.9, r0: 48 },
-  { turns: 1.16, r0: 40 },
-  { turns: 1.42, r0: 34 },
-  { turns: 1.68, r0: 28 },
-  { turns: 1.94, r0: 24 },
+  // From an open sweep that does not come round even once to a curl of over two turns; the looser ones
+  // start from a wider eye, as the old shapes did.
+  { turns: 0.6, r0: 56 },
+  { turns: 0.92, r0: 46 },
+  { turns: 1.24, r0: 38 },
+  { turns: 1.56, r0: 31 },
+  { turns: 1.88, r0: 25 },
   { turns: 2.2, r0: 20 },
 ];
 export const SHAPES = VARIANT_SHAPES.length;
@@ -282,12 +282,21 @@ const SIZE_MAX = spiralSize(buildVariant(VARIANT_SHAPES[VARIANT_SHAPES.length - 
 const SIZE_MIN = 0.85 * SIZE_MAX;
 const BUILT: Array<{ v: Variant; slots: number; shape: number; size: number }> = [];
 VARIANT_SHAPES.forEach((shape, k) => {
+  // A shape whose lengths all step over the range still gets the one nearest it.
+  let nearest: (typeof BUILT)[number] | null = null;
+  const away = (size: number) => Math.max(0, SIZE_MIN - size, size - SIZE_MAX);
+  let found = false;
   for (let slots = 1; slots <= 6 * MAX_SEGMENTS; slots++) {
     const v = buildVariant(shape, slots);
     const size = spiralSize(v);
+    if (!nearest || away(size) < away(nearest.size)) nearest = { v, slots, shape: k, size };
     if (size > 1.02 * SIZE_MAX) break;
-    if (size >= 0.98 * SIZE_MIN) BUILT.push({ v, slots, shape: k, size });
+    if (size >= 0.98 * SIZE_MIN) {
+      BUILT.push({ v, slots, shape: k, size });
+      found = true;
+    }
   }
+  if (!found && nearest) BUILT.push(nearest);
 });
 
 /** Every shape at every length that makes it a spiral of the right size. */
@@ -300,11 +309,18 @@ const VARIANT_SIZE = BUILT.map((b) => b.size);
 /** Arc length of each variant's line, eye not included. */
 export const VARIANT_LEN = VARIANT_SLOTS.map((n) => sequence(n).len);
 
+/** How far, in turns, a shape may be from the one a message's length suggests and still come up often. */
+const TURN_SPREAD = 0.45;
+/** Each time a shape has been used already in the conversation, its chance is multiplied by this. */
+const REPEAT = 0.55;
+
 /**
- * A spiral for a message of `need` segments: a size picked at random within the range, then one of the
- * shapes that can hold the message, at its length nearest that size.
+ * A spiral for a message of `need` segments: a size picked at random within the range, then a shape that
+ * can hold the message, at its length nearest that size. Short messages lean to the open shapes and long
+ * ones to the tight ones, but only lean: any shape that fits can come up, and the more often a shape has
+ * been used already (`used`, by shape), the less likely it is, so messages of the same length still differ.
  */
-export function pickVariant(rnd: () => number, need: number): number {
+export function pickVariant(rnd: () => number, need: number, used: readonly number[] = []): number {
   const target = SIZE_MIN + rnd() * (SIZE_MAX - SIZE_MIN);
   const nearest = new Map<number, number>();
   VARIANTS.forEach((_, v) => {
@@ -312,8 +328,22 @@ export function pickVariant(rnd: () => number, need: number): number {
     const best = nearest.get(VARIANT_SHAPE[v]);
     if (best === undefined || Math.abs(VARIANT_SIZE[v] - target) < Math.abs(VARIANT_SIZE[best] - target)) nearest.set(VARIANT_SHAPE[v], v);
   });
-  const options = [...nearest.values()];
-  return options[Math.floor(rnd() * options.length)];
+  // The turns a message of this length leans to: the loosest shape for a short one (up to two segments,
+  // a greeting with its author's name already takes two), the tightest for the longest, curving between.
+  const first = VARIANT_SHAPES[0].turns;
+  const last = VARIANT_SHAPES[VARIANT_SHAPES.length - 1].turns;
+  const t = Math.max(0, Math.min(1, (need - 2) / Math.max(1, MAX_SEGMENTS - 2)));
+  const lean = first + (last - first) * t ** 0.8;
+  const options = [...nearest.entries()].map(([shape, v]) => {
+    const off = (VARIANT_SHAPES[shape].turns - lean) / TURN_SPREAD;
+    return { v, weight: Math.exp(-(off * off) / 2) * REPEAT ** (used[shape] ?? 0) };
+  });
+  let pick = rnd() * options.reduce((t, o) => t + o.weight, 0);
+  for (const o of options) {
+    pick -= o.weight;
+    if (pick <= 0) return o.v;
+  }
+  return options[options.length - 1].v;
 }
 
 /** Point, normal and unit tangent at arc position `s` (clamped; negative in the eye) of a spiral variant. */
@@ -682,6 +712,8 @@ function layoutWithSeed(parents: number[], need: number[], seed: number, keepApa
 
     const P = nodes[parent].placement;
     const parentSegments = VARIANT_SLOTS[P.variant];
+    // Shapes used so far, so the reply's leans to the others.
+    const shapesUsed = VARIANT_SHAPES.map((_, k) => nodes.filter((n) => VARIANT_SHAPE[n.placement.variant] === k).length);
     const parentSeq = sequence(parentSegments);
     const branch = BRANCH + (rnd() - 0.5) * 0.4;
     const RB = Math.max(...VARIANTS.map((_, k) => rmaxOf(k, VARIANT_LEN[k])));
@@ -703,7 +735,7 @@ function layoutWithSeed(parents: number[], need: number[], seed: number, keepApa
         const sx = ox * side;
         const sy = oy * side;
         const mirror = rnd() < 0.5 ? 1 : -1;
-        const variant = pickVariant(rnd, need[i]);
+        const variant = pickVariant(rnd, need[i], shapesUsed);
         const len = VARIANT_LEN[variant];
         const bx = fwd * tx * Math.cos(branch) + sx * Math.sin(branch);
         const by = fwd * ty * Math.cos(branch) + sy * Math.sin(branch);
