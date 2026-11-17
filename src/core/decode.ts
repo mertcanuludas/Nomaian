@@ -43,8 +43,17 @@ export interface DecodedMessage {
 export interface Partial {
   /** low two bits of the message's index: all a segment says about which message it is */
   index: number;
+  /** the message's full index, once known (from its first segment, which holds it), or -1 */
+  number: number;
   segments: number;
   have: number;
+}
+
+/** A chain of writing found in a frame: its markers, and the message it is part of if that is known yet. */
+export interface ChainSeen {
+  markers: Pt[];
+  /** index of the message, or -1 while not known */
+  message: number;
 }
 
 const K = GAP_VERTICES;
@@ -454,6 +463,8 @@ function reverseGap(gap: Float32Array): Float32Array {
 const reverseRun = (gaps: Float32Array[]) => gaps.map(reverseGap).reverse();
 
 interface Contig {
+  /** which message its segments belong to: the segments' key (see Reader.segments), once one has been read */
+  key?: string;
   /** summed scores per gap */
   gaps: Float32Array[];
   /** hard values, kept in step with gaps */
@@ -492,8 +503,8 @@ export interface FrameResult {
   messages: DecodedMessage[];
   /** messages of which only some segments have been read */
   partial: Partial[];
-  /** marker positions of the chains found in this frame, for display */
-  chains: Pt[][];
+  /** the chains found in this frame, for display */
+  chains: ChainSeen[];
   ms: number;
 }
 
@@ -521,6 +532,13 @@ export class Reader {
   /** verified segments: `${index}:${segments}` -> segment -> chunk (hex) -> how often it was read */
   private segments = new Map<string, Array<Map<string, SegmentRead>>>();
   private complete = new Map<string, DecodedMessage>();
+  /**
+   * Full message index for a segments' key, once known: segments only carry two bits of it, but a message's
+   * first segment holds its header, and a complete message says it too.
+   */
+  private numbers = new Map<string, number>();
+  /** keys of messages read completely */
+  private done = new Set<string>();
   /** polarity of the ink, once something has been read */
   darkInk: boolean | undefined;
 
@@ -534,21 +552,22 @@ export class Reader {
       (dark: boolean) => binarizeBlocks(g, 12, dark),
       (dark: boolean) => binarize(g, minDim / 8, dark),
     ];
-    const shown: Pt[][] = [];
+    const shown: Array<{ markers: Pt[]; contig: Contig | null }> = [];
     const polarity = opts.darkInk ?? this.darkInk;
     for (const pass of opts.passes ?? binarizers.map((_, i) => i)) {
       for (const darkInk of [true, false]) {
         if (polarity !== undefined && polarity !== darkInk) continue;
         const chains = readChains(g, binarizers[pass](darkInk), darkInk);
-        for (const c of chains) {
-          shown.push(c.markers);
-          if (c.gaps.length >= 2) this.remember(c.gaps, now);
-        }
+        for (const c of chains) shown.push({ markers: c.markers, contig: c.gaps.length >= 2 ? this.remember(c.gaps, now) : null });
         if (this.decodeRuns(darkInk)) this.darkInk ??= darkInk;
       }
     }
     this.contigs = this.contigs.filter((c) => now - c.seen < MEMORY_MS);
-    return { messages: this.messages(), partial: this.partial(), chains: shown, ms: Date.now() - t0 };
+    const chains = shown.map(({ markers, contig }) => {
+      const key = contig?.key;
+      return { markers, message: key !== undefined ? (this.numbers.get(key) ?? -1) : -1 };
+    });
+    return { messages: this.messages(), partial: this.partial(), chains, ms: Date.now() - t0 };
   }
 
   messages(): DecodedMessage[] {
@@ -558,15 +577,15 @@ export class Reader {
   partial(): Partial[] {
     const out: Partial[] = [];
     for (const [key, segs] of this.segments) {
+      if (this.done.has(key)) continue;
       const [index, segments] = key.split(':').map(Number);
-      if ([...this.complete.values()].some((m) => m.index === index)) continue;
-      out.push({ index, segments, have: segs.filter((s) => s.size).length });
+      out.push({ index, number: this.numbers.get(key) ?? -1, segments, have: segs.filter((s) => s.size).length });
     }
-    return out;
+    return out.sort((a, b) => (a.number < 0 ? 1e9 : a.number) - (b.number < 0 ? 1e9 : b.number));
   }
 
-  /** Adds a run of gaps read from a frame, joining it to what was seen before where they overlap. */
-  private remember(run: Float32Array[], now: number) {
+  /** Adds a run of gaps read from a frame, joining it to what was seen before where they overlap; returns where it went. */
+  private remember(run: Float32Array[], now: number): Contig {
     const fwd = run.map((gap) => hard(gap).values);
     const rev = reverseRun(run);
     const back = rev.map((gap) => hard(gap).values);
@@ -584,9 +603,10 @@ export class Reader {
       }
     }
     if (!target) {
-      this.contigs.push({ gaps: run.map((x) => x.slice()), values: fwd, seen: now, dirty: true });
+      const fresh: Contig = { gaps: run.map((x) => x.slice()), values: fwd, seen: now, dirty: true };
+      this.contigs.push(fresh);
       if (this.contigs.length > MAX_CONTIGS) this.contigs.sort((a, b) => b.seen - a.seen).splice(MAX_CONTIGS);
-      return;
+      return fresh;
     }
     const c = target.c;
     this.merge(c, target.flip ? rev : run, target.off);
@@ -599,10 +619,12 @@ export class Reader {
         const o = bestOverlap(c.values, seq.map((gap) => hard(gap).values));
         if (!o || o.n < 2) continue;
         this.merge(c, seq, o.off);
+        c.key ??= other.key;
         this.contigs = this.contigs.filter((x) => x !== other);
-        return;
+        return c;
       }
     }
+    return c;
   }
 
   /** Whether the gap of `run` that overlaps at `off` matches exactly one remembered gap, either way round. */
@@ -644,7 +666,12 @@ export class Reader {
       for (const gaps of [c.gaps, reverseRun(c.gaps)])
         for (let off = 0; off + GAPS_PER_SEGMENT <= gaps.length; off++) {
           const seg = decodeSegment(gaps.slice(off, off + GAPS_PER_SEGMENT));
-          if (seg && this.addSegment(seg, darkInk)) any = true;
+          if (!seg) continue;
+          const key = `${seg.index}:${seg.segments}`;
+          c.key = key;
+          // A message's first segment starts with its header: thread (2 bytes), then its index.
+          if (seg.seg === 0) this.numbers.set(key, seg.chunk[2]);
+          if (this.addSegment(seg, darkInk)) any = true;
         }
     }
     return any;
@@ -684,6 +711,9 @@ export class Reader {
       this.complete.set(`${msg.thread}:${msg.index}`, {
         ...msg, darkInk, corrected: combo.reduce((n, s) => n + s.corrected, 0),
       });
+      const key = `${index}:${segs.length}`;
+      this.numbers.set(key, msg.index);
+      this.done.add(key);
       return;
     }
   }

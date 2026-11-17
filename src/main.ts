@@ -1,4 +1,4 @@
-import { BINARIZERS, DecodedMessage, Partial, Pt } from './core/decode';
+import { BINARIZERS, ChainSeen, DecodedMessage, Partial } from './core/decode';
 import { Conversation, encodeWithLayout, layoutKey, LayoutRequest, layoutRequest, MAX_MESSAGES, Message, messageSize } from './core/encode';
 import { DATA_BYTES, Layout, PORTS } from './core/layout';
 import type { LayoutJob, LayoutReply } from './layout-worker';
@@ -105,7 +105,12 @@ function saveConversation() {
   }
 }
 
-const displayName = (i: number) => conv.messages[i].author.trim() || `#${i + 1}`;
+const displayName = (i: number) => conv.messages[i].author.trim() || `${i + 1}. mesaj`;
+/** "↳ 1. mesaja cevap · Solanum": which message a reply answers, by number and (if it has one) author. */
+const replyNote = (parent: number) => {
+  const author = conv.messages[parent].author.trim();
+  return `↳ ${parent + 1}. mesaja cevap${author ? ` · ${author}` : ''}`;
+};
 const replies = (i: number) => conv.messages.filter((m) => m.parent === i).length;
 
 /** Removes message `i` and every reply under it, renumbering the rest. */
@@ -186,7 +191,7 @@ function buildEditor() {
     if (m.parent >= 0) {
       const note = el('p', 'reply-to');
       note.dataset.parent = String(m.parent);
-      note.textContent = `↳ ${displayName(m.parent)} mesajına cevap`;
+      note.textContent = replyNote(m.parent);
       li.append(note);
     }
 
@@ -200,7 +205,7 @@ function buildEditor() {
       m.author = author.value;
       updateCard(li, i);
       threadEl.querySelectorAll<HTMLElement>(`.reply-to[data-parent="${i}"]`).forEach((n) => {
-        n.textContent = `↳ ${displayName(i)} mesajına cevap`;
+        n.textContent = replyNote(i);
       });
       changed();
     });
@@ -241,6 +246,8 @@ function buildEditor() {
     meta.append(el('span', 'count'), inkPicker(i), actions);
 
     li.dataset.index = String(i);
+    // Every message has a number, the same one the reader shows when it reads the spiral back.
+    li.prepend(el('span', 'msg-no', `${i + 1}. mesaj`));
     li.append(author, text, meta);
     threadEl.append(li);
     updateCard(li, i);
@@ -691,9 +698,16 @@ function stopScan() {
 
 function updateProgress() {
   const total = totalOf();
-  // Messages seen only in part: how many of their pieces are in.
-  const pieces = partial.map((p) => `${p.have}/${p.segments} parça`).join(' · ');
-  const head = total ? `${collected.size} / ${total} mesaj` : collected.size ? `${collected.size} mesaj` : 'Spiral aranıyor…';
+  // Messages seen only in part: how many of their pieces are in. A message's number is known once its
+  // first piece, which holds it, has been read.
+  const pieces = partial.map((p) => `${p.number >= 0 ? p.number + 1 : '?'}. mesaj ${p.have}/${p.segments} parça`).join(' · ');
+  const head = total
+    ? `${collected.size} / ${total} mesaj`
+    : collected.size
+      ? `${collected.size} mesaj`
+      : partial.length
+        ? 'Okunuyor…'
+        : 'Spiral aranıyor…';
   progressEl.textContent = pieces ? `${head} · ${pieces}` : head;
 }
 
@@ -743,19 +757,23 @@ function showConversation() {
     const m = msgs[i];
     const li = el('li', 'msg');
     li.style.setProperty('--depth', String(Math.min(depth, 4)));
-    if (local[i].parent < 0 && m.parent >= 0) li.append(el('p', 'reply-to', `↳ henüz okunmamış #${m.parent + 1} mesajına cevap`));
-    const author = m.author.trim() || `#${m.index + 1}`;
+    li.append(el('span', 'msg-no', `${m.index + 1}. mesaj`));
+    if (m.parent >= 0) {
+      const parent = msgs.find((p) => p.index === m.parent);
+      li.append(el('p', 'reply-to', parent ? `↳ ${m.parent + 1}. mesaja cevap` : `↳ henüz okunmamış ${m.parent + 1}. mesaja cevap`));
+    }
+    const author = m.author.trim() || `${m.index + 1}. mesaj`;
     li.append(el('strong', 'author', author), el('p', 'text', m.text));
     resultEl.append(li);
-    lines.push(`${'  '.repeat(depth)}${author}: ${m.text}`);
+    lines.push(`${'  '.repeat(depth)}${m.index + 1}. ${author}: ${m.text}`);
   }
   readText = lines.join('\n');
   resultEl.hidden = !msgs.length;
   copyBtn.hidden = !msgs.length;
 }
 
-/** Draws the chains of writing found in a frame: the line through their markers, and the markers. */
-function drawChains(canvas: HTMLCanvasElement, chains: Pt[][], alpha: number) {
+/** Draws the chains of writing found in a frame: the line through their markers, the markers, and message numbers. */
+function drawChains(canvas: HTMLCanvasElement, chains: ChainSeen[], alpha: number) {
   const ctx = canvas.getContext('2d')!;
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = '#8cf0b8';
@@ -763,7 +781,8 @@ function drawChains(canvas: HTMLCanvasElement, chains: Pt[][], alpha: number) {
   ctx.lineWidth = Math.max(2, canvas.width / 300);
   ctx.lineJoin = 'round';
   const r = Math.max(4, canvas.width / 180);
-  for (const chain of chains) {
+  const numbered = new Set<number>();
+  for (const { markers: chain, message } of chains) {
     ctx.beginPath();
     chain.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
     ctx.stroke();
@@ -771,6 +790,14 @@ function drawChains(canvas: HTMLCanvasElement, chains: Pt[][], alpha: number) {
       ctx.beginPath();
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
       ctx.fill();
+    }
+    if (message >= 0 && !numbered.has(message)) {
+      numbered.add(message);
+      const mid = chain[Math.floor(chain.length / 2)];
+      ctx.font = `600 ${Math.round(4 * r)}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(String(message + 1), mid.x, mid.y - 2 * r);
     }
   }
   ctx.globalAlpha = 1;
