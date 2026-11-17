@@ -95,7 +95,8 @@ Kaynak kod:
 | `src/core/detect.ts` | Görüntü hazırlama ve işaret bulma |
 | `src/core/render.ts` | Renkler, tuğla duvar ve çizim |
 | `src/core/rs.ts`, `bits.ts`, `textcodec.ts`, `homography.ts` | Hata düzeltme, bit işlemleri, metin sıkıştırma, perspektif |
-| `src/main.ts`, `src/worker.ts` | Arayüz ve arka planda okuma |
+| `src/main.ts` | Arayüz |
+| `src/worker.ts`, `src/layout-worker.ts` | Arka planda okuma ve konuşmanın yerleşimi |
 
 ## Lisans
 

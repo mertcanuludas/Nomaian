@@ -17,22 +17,26 @@
     </header>
 
     <main>
+      <div id="restore" class="restore" role="status" hidden>
+        <p id="restore-text"></p>
+        <div class="buttons">
+          <button id="restore-yes" class="small primary">Yükle</button>
+          <button id="restore-no" class="small">Hayır, yeni başla</button>
+        </div>
+      </div>
+
       <section id="tab-write" class="panel">
         <p class="hint">Her mesaj kendi spiraline yazılır; cevaplar cevap verdikleri mesajın spiralinden dallanır.</p>
-        <div id="restore" class="restore" role="status" hidden>
-          <p id="restore-text"></p>
-          <div class="buttons">
-            <button id="restore-yes" class="small primary">Yükle</button>
-            <button id="restore-no" class="small">Hayır, yeni başla</button>
-          </div>
-        </div>
         <ol id="thread" class="thread"></ol>
         <div class="meta">
           <button id="reset" class="small">Yeni konuşma</button>
           <select id="theme" aria-label="Arka plan"></select>
           <label class="ink-all">Tüm yazılar <select id="ink" aria-label="Tüm yazıların rengi"></select></label>
         </div>
-        <canvas id="glyph" aria-label="Nomai spiralleri"></canvas>
+        <div class="glyph-wrap">
+          <canvas id="glyph" aria-label="Nomai spiralleri"></canvas>
+          <p id="glyph-busy" class="busy" role="status" hidden>Yerleşim hesaplanıyor…</p>
+        </div>
         <p id="write-error" class="error" hidden></p>
         <div class="actions">
           <button id="download" class="primary">PNG indir</button>

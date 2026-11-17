@@ -95,8 +95,27 @@ export function encodeMessage(thread: number, index: number, total: number, m: M
 /** The layout depends only on who replies to whom, how many segments each message takes and the thread id, and is slow for big threads, so it is kept between edits. */
 const layoutCache = new Map<string, Layout>();
 
-function cachedLayout(parents: number[], need: number[], seed: number): Layout {
-  const key = `${seed}:${parents.join()}:${need.join()}`;
+/** What a conversation's layout depends on: who replies to whom, how many segments each message takes, the thread. */
+export interface LayoutRequest {
+  parents: number[];
+  need: number[];
+  seed: number;
+}
+
+export function layoutRequest(conversation: Conversation): LayoutRequest {
+  const { thread, messages } = conversation;
+  return {
+    parents: messages.map((m) => m.parent),
+    need: messages.map((m) => Math.min(MAX_SEGMENTS, segmentsFor(messageSize(m)))),
+    seed: thread,
+  };
+}
+
+/** Two conversations with the same key have the same layout. */
+export const layoutKey = (r: LayoutRequest) => `${r.seed}:${r.parents.join()}:${r.need.join()}`;
+
+function cachedLayout({ parents, need, seed }: LayoutRequest): Layout {
+  const key = layoutKey({ parents, need, seed });
   let layout = layoutCache.get(key);
   if (!layout) {
     layout = layoutConversation(parents, need, seed);
@@ -106,11 +125,15 @@ function cachedLayout(parents: number[], need: number[], seed: number): Layout {
   return layout;
 }
 
+/** Encodes a conversation, laying it out here and now (which can take seconds for a big one). */
 export function encodeConversation(conversation: Conversation): EncodedConversation {
+  return encodeWithLayout(conversation, cachedLayout(layoutRequest(conversation)));
+}
+
+/** Encodes a conversation on a layout made for it elsewhere (see layoutRequest). */
+export function encodeWithLayout(conversation: Conversation, layout: Layout): EncodedConversation {
   const { thread, messages } = conversation;
   if (messages.length > MAX_MESSAGES) throw new Error('Konuşma çok uzun');
-  const need = messages.map((m) => Math.min(MAX_SEGMENTS, segmentsFor(messageSize(m))));
-  const layout = cachedLayout(messages.map((m) => m.parent), need, thread);
   // Every spiral's line is as long as its shape makes it; a message that takes fewer segments is written
   // again and again until the line is full (the reader takes the copies as more readings of the same).
   const segments = layout.nodes.map((n) => VARIANT_SLOTS[n.placement.variant]);

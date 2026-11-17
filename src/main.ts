@@ -1,6 +1,7 @@
 import { BINARIZERS, DecodedMessage, Partial, Pt } from './core/decode';
-import { Conversation, encodeConversation, MAX_MESSAGES, Message, messageSize } from './core/encode';
-import { DATA_BYTES, PORTS } from './core/layout';
+import { Conversation, encodeWithLayout, layoutKey, LayoutRequest, layoutRequest, MAX_MESSAGES, Message, messageSize } from './core/encode';
+import { DATA_BYTES, Layout, PORTS } from './core/layout';
+import type { LayoutJob, LayoutReply } from './layout-worker';
 import { imageSize, INKS, renderConversation, WALLS, wallTheme } from './core/render';
 import type { DecodeRequest, DecodeResponse } from './worker';
 
@@ -304,16 +305,112 @@ function markSwatches(group: HTMLElement, ink: string) {
   group.querySelectorAll<HTMLElement>('.swatch').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.ink === ink)));
 }
 
-/** Draws the conversation, or explains why it cannot. Returns whether it could. */
+// ---------- layout, worked out in the background ----------
+//
+// Laying out a big conversation can take seconds, so it is done by a worker while the page keeps
+// responding; the drawing waits for it. Only one layout is worked on at a time, and of the ones asked for
+// meanwhile only the latest is kept: typing on while one is being worked out does not pile up work.
+const layoutWorker = new Worker(new URL('./layout-worker.ts', import.meta.url), { type: 'module' });
+const layouts = new Map<string, Layout>();
+const layoutErrors = new Map<string, string>();
+let layoutJobs = 0;
+let working: { id: number; key: string } | null = null;
+let queued: LayoutRequest | null = null;
+/** Callers waiting for a layout (the PNG export), by key. */
+const waiting = new Map<string, Array<{ resolve: (l: Layout) => void; reject: (e: Error) => void }>>();
+
+function requestLayout(req: LayoutRequest) {
+  const key = layoutKey(req);
+  if (layouts.has(key) || layoutErrors.has(key) || working?.key === key) return;
+  if (working) {
+    // A newer state replaces an older one still waiting its turn; anyone waiting for that one is told so.
+    if (queued && layoutKey(queued) !== key) settle(layoutKey(queued), new Error('Konuşma değişti'));
+    queued = req;
+    return;
+  }
+  working = { id: ++layoutJobs, key };
+  const job: LayoutJob = { id: working.id, ...req };
+  layoutWorker.postMessage(job);
+}
+
+/** Hands a finished layout (or what went wrong) to whoever waits for it. */
+function settle(key: string, result: Layout | Error) {
+  for (const w of waiting.get(key) ?? []) {
+    if (result instanceof Error) w.reject(result);
+    else w.resolve(result);
+  }
+  waiting.delete(key);
+}
+
+layoutWorker.onmessage = (e: MessageEvent<LayoutReply>) => {
+  const reply = e.data;
+  if (!working || reply.id !== working.id) return;
+  const { key } = working;
+  working = null;
+  if ('layout' in reply) {
+    if (layouts.size > 30) layouts.clear();
+    layouts.set(key, reply.layout);
+    settle(key, reply.layout);
+  } else {
+    layoutErrors.set(key, reply.error);
+    settle(key, new Error(reply.error));
+  }
+  if (queued) {
+    const next = queued;
+    queued = null;
+    requestLayout(next);
+  }
+  redraw();
+};
+
+/** The layout of `c`, once it has been worked out. */
+function layoutFor(c: Conversation): Promise<Layout> {
+  const req = layoutRequest(c);
+  const key = layoutKey(req);
+  const have = layouts.get(key);
+  if (have) return Promise.resolve(have);
+  const error = layoutErrors.get(key);
+  if (error) return Promise.reject(new Error(error));
+  return new Promise((resolve, reject) => {
+    waiting.set(key, [...(waiting.get(key) ?? []), { resolve, reject }]);
+    requestLayout(req);
+  });
+}
+
+const glyphBusy = $('glyph-busy');
+
+/**
+ * Draws the conversation, or explains why it cannot. Returns whether it drew it now; if its layout is still
+ * being worked out, the last drawing stays up, marked as being updated, and this runs again when it is in.
+ */
 function redraw(): boolean {
   const over = conv.messages.findIndex((m) => messageSize(m) > DATA_BYTES);
   if (over >= 0) {
     writeError.textContent = `${displayName(over)} mesajı bir spirale sığmıyor, biraz kısalt.`;
     writeError.hidden = false;
+    glyphBusy.hidden = true;
+    return false;
+  }
+  const req = layoutRequest(conv);
+  const key = layoutKey(req);
+  const error = layoutErrors.get(key);
+  if (error) {
+    writeError.textContent = error.includes('room')
+      ? 'Bu konuşmada yeni spirale yer bulunamadı. Son cevabı silmeyi ya da başka bir mesaja cevap vermeyi dene.'
+      : `Konuşma çizilemedi: ${error}`;
+    writeError.hidden = false;
+    glyphBusy.hidden = true;
     return false;
   }
   writeError.hidden = true;
-  const enc = encodeConversation(conv);
+  const layout = layouts.get(key);
+  if (!layout) {
+    glyphBusy.hidden = false;
+    requestLayout(req);
+    return false;
+  }
+  glyphBusy.hidden = true;
+  const enc = encodeWithLayout(conv, layout);
   const { width, height, scale } = imageSize(enc, PREVIEW_SIDE);
   glyphCanvas.width = width;
   glyphCanvas.height = height;
@@ -358,9 +455,10 @@ $('reset').addEventListener('click', () => {
 });
 
 /** Full-resolution PNG of the conversation (the preview canvas is scaled down). */
-function glyphBlob(): Promise<Blob> {
-  if (!redraw()) return Promise.reject(new Error('Mesaj sığmıyor'));
-  const enc = encodeConversation(conv);
+async function glyphBlob(): Promise<Blob> {
+  if (conv.messages.some((m) => messageSize(m) > DATA_BYTES)) throw new Error('Mesaj sığmıyor');
+  const snapshot = conv;
+  const enc = encodeWithLayout(snapshot, await layoutFor(snapshot));
   const { width, height, scale } = imageSize(enc);
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -413,16 +511,11 @@ function offerRestore() {
       : 'Önceki mesajın kayıtlı. Yüklemek ister misin?';
   box.hidden = false;
   yes.onclick = () => {
-    yes.disabled = no.disabled = true;
-    text.textContent = 'Yükleniyor…';
-    // Let the page show that before the (possibly long) layout starts.
-    setTimeout(() => {
-      conv = previous!;
-      previous = null;
-      box.hidden = true;
-      yes.disabled = no.disabled = false;
-      structureChanged();
-    }, 50);
+    // The editor comes back at once; the drawing follows when its layout is worked out.
+    conv = previous!;
+    previous = null;
+    box.hidden = true;
+    structureChanged();
   };
   no.onclick = () => {
     previous = null;

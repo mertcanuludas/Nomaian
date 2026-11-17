@@ -121,6 +121,7 @@ textarea:focus {
   border-left: 3px solid #3a86b8;
   border-radius: 12px;
   background: var(--panel);
+  margin-bottom: 14px;
 }
 
 .restore[hidden] {
@@ -187,6 +188,31 @@ select {
   border-radius: 8px;
   padding: 6px 8px;
   font: inherit;
+}
+
+.glyph-wrap {
+  position: relative;
+  min-height: 120px;
+}
+
+/* Shown over the last drawing while the new layout is worked out. */
+.busy {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(11, 18, 32, 0.85);
+  border: 1px solid #2a3d5a;
+  color: var(--text);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.busy[hidden] {
+  display: none;
 }
 
 canvas#glyph {
