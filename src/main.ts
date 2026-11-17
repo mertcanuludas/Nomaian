@@ -66,7 +66,8 @@ function isConversation(c: unknown): c is Conversation {
   );
 }
 
-function loadConversation(): Conversation {
+/** The conversation saved on this device last time, if any; only read, not laid out (that can be slow). */
+function savedConversation(): Conversation | null {
   try {
     const c = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
     if (isConversation(c)) {
@@ -79,12 +80,23 @@ function loadConversation(): Conversation {
   } catch {
     /* storage unavailable or corrupt */
   }
-  return freshConversation();
+  return null;
 }
 
-let conv = loadConversation();
+/** Whether a conversation is just the opening one every new conversation starts with. */
+function untouched(c: Conversation): boolean {
+  const fresh = freshConversation().messages[0];
+  return c.messages.length === 1 && c.messages[0].author === fresh.author && c.messages[0].text === fresh.text;
+}
+
+// Every visit starts with a new conversation, so a big saved one never holds up the page. A saved one is
+// offered instead (see offerRestore); until the user has answered, nothing is saved over it.
+let conv = freshConversation();
+let previous = savedConversation();
+if (previous && untouched(previous)) previous = null;
 
 function saveConversation() {
+  if (previous) return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(conv));
   } catch {
@@ -385,6 +397,44 @@ if (navigator.canShare?.({ files: [probe] })) {
 buildEditor();
 syncInkAll();
 redraw();
+offerRestore();
+
+/** Asks whether to bring back the conversation saved last time, or start afresh and forget it. */
+function offerRestore() {
+  if (!previous) return;
+  const box = $('restore');
+  const text = $('restore-text');
+  const yes = $<HTMLButtonElement>('restore-yes');
+  const no = $<HTMLButtonElement>('restore-no');
+  const n = previous.messages.length;
+  text.textContent =
+    n > 1
+      ? `Önceki konuşman kayıtlı (${n} mesaj). Yüklemek ister misin? Büyük konuşmaların yüklenmesi biraz sürebilir.`
+      : 'Önceki mesajın kayıtlı. Yüklemek ister misin?';
+  box.hidden = false;
+  yes.onclick = () => {
+    yes.disabled = no.disabled = true;
+    text.textContent = 'Yükleniyor…';
+    // Let the page show that before the (possibly long) layout starts.
+    setTimeout(() => {
+      conv = previous!;
+      previous = null;
+      box.hidden = true;
+      yes.disabled = no.disabled = false;
+      structureChanged();
+    }, 50);
+  };
+  no.onclick = () => {
+    previous = null;
+    box.hidden = true;
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      /* storage unavailable */
+    }
+    saveConversation();
+  };
+}
 
 // ---------- read ----------
 const MAX_SIDE = 2400;

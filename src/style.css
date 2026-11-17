@@ -109,6 +109,34 @@ textarea:focus {
   margin-left: auto;
 }
 
+/* Offer to bring back the conversation saved last time. */
+.restore {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 12px 14px;
+  border: 1px solid #2a3d5a;
+  border-left: 3px solid #3a86b8;
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.restore[hidden] {
+  display: none;
+}
+
+.restore p {
+  margin: 0;
+  flex: 1 1 220px;
+}
+
+.restore .buttons {
+  display: flex;
+  gap: 8px;
+}
+
 .ink-all {
   display: flex;
   align-items: center;
